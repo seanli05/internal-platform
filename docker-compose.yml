@@ -1,0 +1,70 @@
+# Local development stack: `docker compose up` brings up api + worker + postgres.
+# Defaults below let a fresh clone start with no .env; copy .env.example to .env
+# to override them.
+
+x-backend: &backend
+  build: .
+  # Compose sets the container-side database host; everything else comes from .env.
+  environment: &backend-env
+    DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-dss}:${POSTGRES_PASSWORD:-dss_local_password}@postgres:5432/${POSTGRES_DB:-dss}
+    ENVIRONMENT: local
+    DEV_MODE: ${DEV_MODE:-true}
+    LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    WORKER_POLL_INTERVAL_SECONDS: ${WORKER_POLL_INTERVAL_SECONDS:-5}
+  env_file:
+    - path: .env
+      required: false
+  volumes:
+    - .:/app
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-dss}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dss_local_password}
+      POSTGRES_DB: ${POSTGRES_DB:-dss}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dss} -d ${POSTGRES_DB:-dss}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    <<: *backend
+    # Migrations run on start so a fresh clone needs no manual step.
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    ports:
+      - "${API_PORT:-8000}:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://localhost:8000/health')
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  worker:
+    <<: *backend
+    command: python -m app.worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      # Wait for the API so migrations have been applied before the worker runs.
+      api:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
