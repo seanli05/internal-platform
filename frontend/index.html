@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DSS Photos</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 16px;
+      color: #222;
+      background: #fafafa;
+    }
+    form {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-bottom: 8px;
+    }
+    #status { min-height: 1.4em; margin: 0 0 16px; }
+    #status.error { color: #b00020; }
+    #status.ok { color: #1b6e2a; }
+
+    /* auto-fill + minmax: as many 180px+ columns as fit, stretched to fill
+       the row. Reflows on its own at any screen width, no media queries. */
+    #gallery {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: 12px;
+    }
+    figure { margin: 0; background: #fff; border: 1px solid #ddd; border-radius: 6px; overflow: hidden; }
+    figure img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; }
+    figcaption { padding: 6px 8px; font-size: 13px; overflow-wrap: anywhere; }
+    .empty { color: #777; }
+  </style>
+</head>
+<body>
+  <h1>Photos</h1>
+
+  <!-- A plain HTML form. Without JavaScript, submitting it would navigate the
+       whole page to the API. Our script intercepts the submit and sends the
+       request with fetch() instead, so the page stays put. -->
+  <form id="upload-form">
+    <!-- name="file" matters: it must match the parameter name in the
+         FastAPI handler, `def upload_photo(file: UploadFile, ...)`.
+         accept="image/*" only filters the file picker; it's a convenience,
+         not security. The server still validates everything. -->
+    <input type="file" name="file" accept="image/*" required>
+    <button type="submit">Upload</button>
+  </form>
+  <p id="status"></p>
+
+  <div id="gallery"></div>
+
+  <script>
+    // Where the API lives. The page is served from a different origin
+    // (http://localhost:5500), so every request needs the full address.
+    // This is the request that makes CORS matter: different port means
+    // different origin.
+    const API_BASE = "http://localhost:8000";
+
+    // Grab the elements we'll work with, once, up front.
+    const form = document.getElementById("upload-form");
+    const statusEl = document.getElementById("status");
+    const gallery = document.getElementById("gallery");
+
+    // Small helper to show a message under the form. `kind` sets a CSS
+    // class ("error" is red, "ok" is green).
+    function showStatus(message, kind) {
+      statusEl.textContent = message;
+      statusEl.className = kind || "";
+    }
+
+    // ---------------------------------------------------------------
+    // Turning a failed response into a readable message
+    // ---------------------------------------------------------------
+    // FastAPI sends errors as JSON shaped like {"detail": ...}.
+    //   - HTTPException (your 400/413/415s): detail is a string,
+    //     e.g. {"detail": "File must be an image"}
+    //   - Validation errors (422): detail is a LIST of objects, each
+    //     with a "msg" field.
+    // This handles both, and falls back to the status code if the body
+    // isn't JSON at all (e.g. a proxy error page).
+    async function errorMessage(response) {
+      try {
+        const body = await response.json();
+        if (typeof body.detail === "string") return body.detail;
+        if (Array.isArray(body.detail)) return body.detail.map((d) => d.msg).join("; ");
+      } catch {
+        // Body wasn't JSON. Fall through to the generic message.
+      }
+      return `Request failed (HTTP ${response.status})`;
+    }
+
+    // ---------------------------------------------------------------
+    // Loading and drawing the gallery
+    // ---------------------------------------------------------------
+    // `async` lets this function use `await`. `await` pauses THIS function
+    // until a Promise settles (here, until the network answers) without
+    // freezing the page. Clicks and scrolling keep working meanwhile.
+    async function loadGallery() {
+      let photos;
+      try {
+        // fetch() with no options sends a GET. It returns a Promise that
+        // resolves to a Response object as soon as the response HEADERS
+        // arrive. The body may still be downloading at that point.
+        const response = await fetch(`${API_BASE}/photos`);
+
+        // A gotcha: fetch() only rejects (throws) on NETWORK failure, such as
+        // the server being down or CORS blocking the response. An HTTP 404
+        // or 500 still "succeeds" from fetch's point of view, so you must
+        // check response.ok (true for 200-299) yourself.
+        if (!response.ok) {
+          showStatus(await errorMessage(response), "error");
+          return;
+        }
+
+        // .json() reads the rest of the body and parses it. It's async too,
+        // because the body may still be arriving. The result here is an
+        // array like [{id, filename, uploaded_at, url}, ...].
+        photos = await response.json();
+      } catch (err) {
+        // We land here when the request never produced a readable response:
+        // API not running, wrong URL, or a CORS rejection. The browser
+        // deliberately hides the reason from JS, so check DevTools > Console.
+        showStatus("Could not reach the API. Is uvicorn running on :8000?", "error");
+        console.error(err);
+        return;
+      }
+
+      renderGallery(photos);
+    }
+
+    function renderGallery(photos) {
+      // Wipe whatever was drawn before, then rebuild from the fresh list.
+      // Redrawing everything is the simplest correct approach, and it's
+      // plenty fast for a few hundred photos.
+      gallery.replaceChildren();
+
+      // The zero-photos case: show a friendly line instead of a blank area.
+      if (photos.length === 0) {
+        const p = document.createElement("p");
+        p.className = "empty";
+        p.textContent = "No photos yet. Upload one above.";
+        gallery.append(p);
+        return;
+      }
+
+      for (const photo of photos) {
+        // We build elements with createElement + textContent instead of
+        // gluing an HTML string together with innerHTML. `filename` comes
+        // from whoever uploaded the file. A name like
+        // `<img src=x onerror=alert(1)>.png` passed to innerHTML would be
+        // parsed as HTML and RUN. textContent always treats it as plain text.
+        const figure = document.createElement("figure");
+
+        const img = document.createElement("img");
+        // photo.url is a path like "/photos/7/file". Prefix the API's
+        // address to make it a full URL the browser can load.
+        //
+        // Note: <img> loads are NOT blocked by CORS. Embedding a
+        // cross-origin image has always been allowed. What CORS guards is
+        // JavaScript READING a cross-origin response (fetch).
+        img.src = API_BASE + photo.url;
+        img.alt = photo.filename;
+        img.loading = "lazy"; // only download images as they scroll into view
+
+        const caption = document.createElement("figcaption");
+        caption.textContent = photo.filename;
+
+        figure.append(img, caption);
+        gallery.append(figure);
+      }
+    }
+
+    // ---------------------------------------------------------------
+    // Uploading
+    // ---------------------------------------------------------------
+    form.addEventListener("submit", async (event) => {
+      // Stop the browser's default form submit, which would navigate away
+      // to the API URL. We'll send the request ourselves.
+      event.preventDefault();
+
+      // FormData(form) collects every named input in the form. For our file
+      // input that's an entry named "file" whose value is the actual File
+      // object the user picked: its bytes, filename and type.
+      const formData = new FormData(form);
+
+      const button = form.querySelector("button");
+      button.disabled = true; // prevent double-submits while uploading
+      showStatus("Uploading…");
+
+      try {
+        // Sending FormData as the body makes fetch encode it as
+        // multipart/form-data, the format HTML forms use for files. Each
+        // field becomes a "part", and parts are separated by a random
+        // BOUNDARY string, e.g.
+        //
+        //   Content-Type: multipart/form-data; boundary=----WebKitFormBoundaryAb12
+        //
+        //   ------WebKitFormBoundaryAb12
+        //   Content-Disposition: form-data; name="file"; filename="cat.jpg"
+        //   Content-Type: image/jpeg
+        //
+        //   <raw bytes of cat.jpg>
+        //   ------WebKitFormBoundaryAb12--
+        //
+        // The server finds where the file starts and ends by searching for
+        // that boundary, so the Content-Type header MUST carry the same
+        // boundary the body uses. Only the browser knows the boundary it
+        // generated. That's why we do NOT set a Content-Type header
+        // ourselves: writing just "multipart/form-data" would leave out the
+        // boundary, and the server couldn't split the body (you'd get a 422
+        // or a parse error).
+        const response = await fetch(`${API_BASE}/photos`, {
+          method: "POST",
+          body: formData,
+        });
+
+        if (!response.ok) {
+          // The backend rejected it (e.g. 415 "File must be an image" for a
+          // PDF). Show the backend's own message instead of failing silently.
+          showStatus(await errorMessage(response), "error");
+          return;
+        }
+
+        const photo = await response.json();
+        showStatus(`Uploaded ${photo.filename}`, "ok");
+        form.reset(); // clear the file input for the next upload
+
+        // Refetch the list so the new photo appears without a page reload.
+        // (We could append just `photo` locally, but refetching keeps the
+        // page an exact mirror of what the server has.)
+        await loadGallery();
+      } catch (err) {
+        showStatus("Upload failed: could not reach the API.", "error");
+        console.error(err);
+      } finally {
+        // `finally` runs whether we returned early, succeeded, or threw,
+        // so the button always comes back.
+        button.disabled = false;
+      }
+    });
+
+    // Kick things off: draw the gallery as soon as the page loads.
+    loadGallery();
+  </script>
+</body>
+</html>

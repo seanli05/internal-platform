@@ -1,0 +1,5 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+python-multipart   # required by FastAPI to parse multipart/form-data uploads
+pillow             # image validation + thumbnails later
