@@ -1,48 +1,47 @@
-"""Database engine, session factory, and the request-scoped session dependency.
+"""Database wiring: one engine, one session factory, one declarative base.
 
-The engine is created per-application-instance during the lifespan (not at import
-time) and stored on `app.state`. That keeps it bound to the running event loop and
-lets tests spin up an app without touching a real database.
+This file is written out in full as your reference for style/idiom.
+models.py, schemas.py and main.py are yours to write.
 """
 
-from collections.abc import AsyncIterator
+from collections.abc import Generator
 
-from fastapi import FastAPI, Request
-from sqlalchemy.ext.asyncio import (
-    AsyncEngine,
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
+from sqlalchemy import create_engine
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+
+# A SQLite file next to the repo root. Swapping this string for a
+# "postgresql+psycopg://..." URL later is the *only* line that has to change.
+DATABASE_URL = "sqlite:///./photos.db"
+
+# The engine owns the connection pool. Create exactly ONE per process.
+# check_same_thread=False: SQLite normally refuses to let a connection cross
+# threads, and FastAPI runs sync endpoints in a threadpool. Safe here because
+# SQLAlchemy hands each session its own connection.
+engine = create_engine(
+    DATABASE_URL,
+    connect_args={"check_same_thread": False},
 )
 
-from app.config import Settings
+# A factory, not a session. Call SessionLocal() to get a fresh unit of work.
+# autoflush=False keeps SQLAlchemy from sneaking INSERTs out before you commit.
+SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 
-def create_database_engine(settings: Settings) -> AsyncEngine:
-    """Create the async engine for the given settings."""
-    return create_async_engine(
-        str(settings.database_url),
-        pool_pre_ping=True,
-    )
+class Base(DeclarativeBase):
+    """Every model subclasses this. Base.metadata collects the table defs."""
 
 
-def create_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
-    """Create the session factory bound to `engine`."""
-    return async_sessionmaker(engine, expire_on_commit=False)
+def get_db() -> Generator[Session, None, None]:
+    """FastAPI dependency: one session per request, always closed.
 
+    The yield splits this into setup / teardown. FastAPI runs everything
+    before the yield, injects the session into your endpoint, then runs the
+    finally block once the response is sent — even if the endpoint raised.
 
-def get_session_factory(app: FastAPI) -> async_sessionmaker[AsyncSession]:
-    """Return the session factory stored on the app during startup."""
-    factory: async_sessionmaker[AsyncSession] | None = getattr(
-        app.state, "db_session_factory", None
-    )
-    if factory is None:  # pragma: no cover - only reachable if lifespan did not run
-        raise RuntimeError("Database session factory is not configured; did the lifespan run?")
-    return factory
-
-
-async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
-    """FastAPI dependency yielding a session for the duration of one request."""
-    session_factory = get_session_factory(request.app)
-    async with session_factory() as session:
-        yield session
+    .next() used to grab a new session for every endpoint request
+    """
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
