@@ -30,3 +30,21 @@ class PhotoOut(BaseModel):
     @property
     def url(self) -> str:
         return f"/photos/{self.id}/file"
+
+
+class UserOut(BaseModel):
+    """What POST /auth/register returns. No password_hash, ever."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    email: str
+    created_at: datetime
+
+
+class TokenOut(BaseModel):
+    """What POST /auth/login returns. This shape is the OAuth2 convention,
+    so it stays the same after the Google swap."""
+
+    access_token: str
+    token_type: str = "bearer"
