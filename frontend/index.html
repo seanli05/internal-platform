@@ -35,10 +35,36 @@
     figure img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; }
     figcaption { padding: 6px 8px; font-size: 13px; overflow-wrap: anywhere; }
     .empty { color: #777; }
+    #auth { border: 1px solid #ddd; border-radius: 6px; padding: 8px 12px; margin-bottom: 16px; background: #fff; }
+    #auth h2 { font-size: 14px; margin: 4px 0; }
   </style>
 </head>
 <body>
   <h1>Photos</h1>
+
+  <!-- Throwaway password auth. Shown when logged out; replaced by a
+       "Logged in" line + Log out button when a token is stored. -->
+  <section id="auth">
+    <div id="logged-out">
+      <h2>Register</h2>
+      <!-- name="email" / name="password" must match the Form() parameter
+           names in app/auth.py. -->
+      <form id="register-form">
+        <input type="email" name="email" placeholder="email" required>
+        <input type="password" name="password" placeholder="password (8+ chars)" minlength="8" required>
+        <button type="submit">Register</button>
+      </form>
+      <h2>Log in</h2>
+      <form id="login-form">
+        <input type="email" name="email" placeholder="email" required>
+        <input type="password" name="password" placeholder="password" required>
+        <button type="submit">Log in</button>
+      </form>
+    </div>
+    <div id="logged-in" hidden>
+      Logged in. <button id="logout">Log out</button>
+    </div>
+  </section>
 
   <!-- A plain HTML form. Without JavaScript, submitting it would navigate the
        whole page to the API. Our script intercepts the submit and sends the
@@ -66,6 +92,24 @@
     const form = document.getElementById("upload-form");
     const statusEl = document.getElementById("status");
     const gallery = document.getElementById("gallery");
+
+    // ---------------------------------------------------------------
+    // Auth: keeping the token
+    // ---------------------------------------------------------------
+    // The token is the only proof of login, so the page has to keep it
+    // somewhere. localStorage survives reloads. The trade-off: any script
+    // running on this page can read it, so an XSS bug would leak it. That's
+    // one more reason the gallery uses textContent and never innerHTML.
+    const TOKEN_KEY = "dss_token";
+    const getToken = () => localStorage.getItem(TOKEN_KEY);
+
+    function setToken(token) {
+      if (token) localStorage.setItem(TOKEN_KEY, token);
+      else localStorage.removeItem(TOKEN_KEY);
+      // Show whichever half of the auth box matches the current state.
+      document.getElementById("logged-out").hidden = Boolean(token);
+      document.getElementById("logged-in").hidden = !token;
+    }
 
     // Small helper to show a message under the form. `kind` sets a CSS
     // class ("error" is red, "ok" is green).
@@ -177,6 +221,51 @@
     }
 
     // ---------------------------------------------------------------
+    // Register + log in
+    // ---------------------------------------------------------------
+    // Both send the form as FormData, which FastAPI's Form() parameters
+    // read. Same no-Content-Type rule as the upload below.
+    document.getElementById("register-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const response = await fetch(`${API_BASE}/auth/register`, {
+        method: "POST",
+        body: new FormData(event.target),
+      });
+      if (!response.ok) {
+        showStatus(await errorMessage(response), "error");
+        return;
+      }
+      const user = await response.json();
+      showStatus(`Registered ${user.email}. Now log in.`, "ok");
+      event.target.reset();
+    });
+
+    document.getElementById("login-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const response = await fetch(`${API_BASE}/auth/login`, {
+        method: "POST",
+        body: new FormData(event.target),
+      });
+      if (!response.ok) {
+        showStatus(await errorMessage(response), "error");
+        return;
+      }
+      // {access_token, token_type: "bearer"}
+      const { access_token } = await response.json();
+      setToken(access_token);
+      showStatus("Logged in.", "ok");
+      event.target.reset();
+    });
+
+    // Logging out is purely client-side: forget the token. The server
+    // stored nothing, so there's nothing to tell it. (The token itself stays
+    // valid until it expires. That's the price of stateless auth.)
+    document.getElementById("logout").addEventListener("click", () => {
+      setToken(null);
+      showStatus("Logged out.");
+    });
+
+    // ---------------------------------------------------------------
     // Uploading
     // ---------------------------------------------------------------
     form.addEventListener("submit", async (event) => {
@@ -215,10 +304,23 @@
         // ourselves: writing just "multipart/form-data" would leave out the
         // boundary, and the server couldn't split the body (you'd get a 422
         // or a parse error).
+        //
+        // Authorization, on the other hand, we DO set: "Bearer <token>".
+        // This custom header is what triggers the CORS preflight, which is
+        // why main.py lists it in allow_headers.
         const response = await fetch(`${API_BASE}/photos`, {
           method: "POST",
+          headers: { Authorization: `Bearer ${getToken()}` },
           body: formData,
         });
+
+        if (response.status === 401) {
+          // Missing, expired, or rejected token. Drop it so the login form
+          // comes back.
+          setToken(null);
+          showStatus(`${await errorMessage(response)}. Please log in.`, "error");
+          return;
+        }
 
         if (!response.ok) {
           // The backend rejected it (e.g. 415 "File must be an image" for a
@@ -245,7 +347,9 @@
       }
     });
 
-    // Kick things off: draw the gallery as soon as the page loads.
+    // Kick things off: show the right auth box for any saved token, then
+    // draw the gallery (still public) as soon as the page loads.
+    setToken(getToken());
     loadGallery();
   </script>
 </body>

@@ -16,8 +16,10 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app import models
+from app.auth import router as auth_router
 from app.db import Base, engine, get_db
 from app.schemas import PhotoOut
+from app.tokens import get_current_user
 
 UPLOAD_DIR = Path("uploads")
 MAX_BYTES = 10 * 1000 * 1000
@@ -53,11 +55,23 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5500", "http://127.0.0.1:5500"],
     allow_methods=["GET", "POST"],
+    # Authorization isn't a "simple" header, so the browser sends an OPTIONS
+    # preflight first and only proceeds if the API lists it here. Without
+    # this, the frontend's token never reaches the server.
+    allow_headers=["Authorization"],
 )
+
+app.include_router(auth_router)
 
 
 @app.post("/photos", response_model=PhotoOut)
-def upload_photo(file: UploadFile, db: Session = Depends(get_db)):
+def upload_photo(
+    file: UploadFile,
+    db: Session = Depends(get_db),
+    # FastAPI runs this before the body below. No valid token → 401 and
+    # none of the validation or disk writes happen.
+    current_user: models.User = Depends(get_current_user),
+):
     # gates
     if not file.filename:
         raise HTTPException(status_code=400, detail="File must have a filename")
@@ -91,7 +105,7 @@ def upload_photo(file: UploadFile, db: Session = Depends(get_db)):
     # Then the row. If the insert fails, delete the file we just wrote —
     # a compensating action, since the filesystem cannot join the DB's
     # transaction and be rolled back with it.
-    photo = models.Photo(filename=file.filename, path=str(dest))
+    photo = models.Photo(filename=file.filename, path=str(dest), user_id=current_user.id)
     try:
         db.add(photo)
         db.commit()

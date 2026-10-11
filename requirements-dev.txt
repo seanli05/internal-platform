@@ -1,0 +1,3 @@
+-r requirements.txt
+pytest
+httpx2             # FastAPI's TestClient is built on it
