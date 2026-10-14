@@ -10,6 +10,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, computed_field
 
+from app.models import Role, Status
+
 
 class PhotoOut(BaseModel):
     """What GET /photos returns for each row."""
@@ -33,13 +35,15 @@ class PhotoOut(BaseModel):
 
 
 class UserOut(BaseModel):
-    """What POST /auth/register returns. No password_hash, ever."""
+    """A user as the API shows it. No password_hash, ever."""
 
     model_config = ConfigDict(from_attributes=True)
 
     id: int
     email: str
     created_at: datetime
+    role: Role
+    status: Status
 
 
 class TokenOut(BaseModel):
