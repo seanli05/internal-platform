@@ -4,6 +4,11 @@ __pycache__/
 .venv/
 venv/
 
+# Tool caches — machine-specific, regenerated on every run
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
 # Local data — never commit user uploads or the dev database
 uploads/*
 !uploads/.gitkeep

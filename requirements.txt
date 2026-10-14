@@ -6,3 +6,4 @@ pillow             # image validation + thumbnails later
 bcrypt             # password hashing (throwaway login; passlib is unmaintained and breaks on bcrypt 5)
 pyjwt              # sign + verify access tokens
 python-dotenv      # load SECRET_KEY from .env
+alembic            # schema migrations

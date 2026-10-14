@@ -17,17 +17,16 @@ from sqlalchemy.orm import Session
 
 from app import models
 from app.auth import router as auth_router
-from app.db import Base, engine, get_db
+from app.db import get_db
 from app.schemas import PhotoOut
 from app.tokens import get_current_user
 
 UPLOAD_DIR = Path("uploads")
 MAX_BYTES = 10 * 1000 * 1000
 
-# CREATE TABLE IF NOT EXISTS — safe to re-run, but it will NOT alter
-# an existing table when you change a column. That limitation is exactly why
-# Alembic exists. You get to feel the pain first.
-Base.metadata.create_all(bind=engine)
+# No create_all here: the app never changes the schema. Tables are created
+# and altered only by `alembic upgrade head` (see docs/migrations.md), so the
+# database's alembic_version always matches reality.
 
 # Create the uploads folder if it isn't there yet. parents=True also creates
 # any missing parent folders; exist_ok=True means "fine if it already exists"
