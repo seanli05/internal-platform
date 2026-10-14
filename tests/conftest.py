@@ -19,8 +19,11 @@ from PIL import Image
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app import main
+from app import main, models
 from app.db import Base, get_db
+from app.models import Role, Status
+from app.passwords import hash_password
+from app.tokens import create_access_token
 
 
 @pytest.fixture
@@ -93,8 +96,22 @@ def auth_header(token):
     return {"Authorization": f"Bearer {token}"}
 
 
+def make_user(db, email, role=Role.MEMBER, status=Status.APPROVED):
+    """Insert a user directly and return (user, token).
+
+    Skips the HTTP register/login dance so permission tests can set up
+    "an approved exec" or "a pending member" in one line.
+    """
+    user = models.User(email=email, password_hash=hash_password(PASSWORD), role=role, status=status)
+    db.add(user)
+    db.commit()
+    return user, create_access_token(user.id)
+
+
 @pytest.fixture
-def token(client):
-    """Register + log in the default user; return their access token."""
+def token(client, db):
+    """Register + log in the default user, approve them; return their token."""
     register(client)
+    db.query(models.User).filter_by(email=EMAIL).update({"status": Status.APPROVED})
+    db.commit()
     return login(client).json()["access_token"]

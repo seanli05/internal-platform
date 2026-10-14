@@ -62,14 +62,16 @@
       </form>
     </div>
     <div id="logged-in" hidden>
-      Logged in. <button id="logout">Log out</button>
+      Logged in as <span id="me"></span>. <button id="logout">Log out</button>
     </div>
   </section>
 
   <!-- A plain HTML form. Without JavaScript, submitting it would navigate the
        whole page to the API. Our script intercepts the submit and sends the
        request with fetch() instead, so the page stays put. -->
-  <form id="upload-form">
+  <!-- hidden until /users/me says this account is approved. Hiding is
+       convenience only: the API enforces the real rule with a 403. -->
+  <form id="upload-form" hidden>
     <!-- name="file" matters: it must match the parameter name in the
          FastAPI handler, `def upload_photo(file: UploadFile, ...)`.
          accept="image/*" only filters the file picker; it's a convenience,
@@ -103,12 +105,59 @@
     const TOKEN_KEY = "dss_token";
     const getToken = () => localStorage.getItem(TOKEN_KEY);
 
+    const authHeaders = () => ({ Authorization: `Bearer ${getToken()}` });
+
     function setToken(token) {
       if (token) localStorage.setItem(TOKEN_KEY, token);
       else localStorage.removeItem(TOKEN_KEY);
       // Show whichever half of the auth box matches the current state.
       document.getElementById("logged-out").hidden = Boolean(token);
       document.getElementById("logged-in").hidden = !token;
+      if (!token) {
+        form.hidden = true;
+        showGalleryMessage("Log in to see photos.");
+      }
+    }
+
+    // ---------------------------------------------------------------
+    // Session: who am I, and am I approved?
+    // ---------------------------------------------------------------
+    // The token says who you are; it doesn't say whether you're approved
+    // (that lives in the database and can change at any time). So after
+    // login and on every page load, ask the API.
+    async function refreshSession() {
+      if (!getToken()) {
+        setToken(null);
+        return;
+      }
+      let user;
+      try {
+        const response = await fetch(`${API_BASE}/users/me`, { headers: authHeaders() });
+        if (response.status === 401) {
+          // Expired or invalid token: back to the login forms.
+          setToken(null);
+          showStatus(`${await errorMessage(response)}. Please log in.`, "error");
+          return;
+        }
+        if (!response.ok) {
+          showStatus(await errorMessage(response), "error");
+          return;
+        }
+        user = await response.json(); // {id, email, role, status, created_at}
+      } catch (err) {
+        showStatus("Could not reach the API. Is uvicorn running on :8000?", "error");
+        console.error(err);
+        return;
+      }
+
+      document.getElementById("me").textContent = `${user.email} (${user.role})`;
+      const approved = user.status === "approved";
+      form.hidden = !approved;
+      if (approved) {
+        await loadGallery();
+      } else {
+        showGalleryMessage("Your account is awaiting approval by an exec.");
+      }
     }
 
     // Small helper to show a message under the form. `kind` sets a CSS
@@ -151,7 +200,8 @@
         // fetch() with no options sends a GET. It returns a Promise that
         // resolves to a Response object as soon as the response HEADERS
         // arrive. The body may still be downloading at that point.
-        const response = await fetch(`${API_BASE}/photos`);
+        // The photo list is members-only now, so it needs the token too.
+        const response = await fetch(`${API_BASE}/photos`, { headers: authHeaders() });
 
         // A gotcha: fetch() only rejects (throws) on NETWORK failure, such as
         // the server being down or CORS blocking the response. An HTTP 404
@@ -178,18 +228,50 @@
       renderGallery(photos);
     }
 
+    // Replace the gallery with a single grey line of text.
+    function showGalleryMessage(message) {
+      clearGallery();
+      const p = document.createElement("p");
+      p.className = "empty";
+      p.textContent = message;
+      gallery.append(p);
+    }
+
+    // Blob URLs (see loadImage) hold the image bytes in memory until
+    // revoked. Track them so a redraw can free the previous batch.
+    let blobUrls = [];
+
+    function clearGallery() {
+      blobUrls.forEach((url) => URL.revokeObjectURL(url));
+      blobUrls = [];
+      gallery.replaceChildren();
+    }
+
+    // <img src="..."> can't carry an Authorization header: the browser
+    // fetches images by itself, outside our JS. So we fetch the bytes with
+    // fetch() (which CAN send the header), wrap them in a Blob, and give the
+    // <img> a blob: URL that points at that in-memory copy.
+    async function loadImage(img, path) {
+      try {
+        const response = await fetch(API_BASE + path, { headers: authHeaders() });
+        if (!response.ok) return; // leave it blank; alt text still shows
+        const url = URL.createObjectURL(await response.blob());
+        blobUrls.push(url);
+        img.src = url;
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
     function renderGallery(photos) {
       // Wipe whatever was drawn before, then rebuild from the fresh list.
       // Redrawing everything is the simplest correct approach, and it's
       // plenty fast for a few hundred photos.
-      gallery.replaceChildren();
+      clearGallery();
 
       // The zero-photos case: show a friendly line instead of a blank area.
       if (photos.length === 0) {
-        const p = document.createElement("p");
-        p.className = "empty";
-        p.textContent = "No photos yet. Upload one above.";
-        gallery.append(p);
+        showGalleryMessage("No photos yet. Upload one above.");
         return;
       }
 
@@ -202,15 +284,11 @@
         const figure = document.createElement("figure");
 
         const img = document.createElement("img");
-        // photo.url is a path like "/photos/7/file". Prefix the API's
-        // address to make it a full URL the browser can load.
-        //
-        // Note: <img> loads are NOT blocked by CORS. Embedding a
-        // cross-origin image has always been allowed. What CORS guards is
-        // JavaScript READING a cross-origin response (fetch).
-        img.src = API_BASE + photo.url;
         img.alt = photo.filename;
-        img.loading = "lazy"; // only download images as they scroll into view
+        // photo.url is a path like "/photos/7/file". Not awaited: all images
+        // download in parallel and each appears when it arrives. (We lose
+        // the browser's loading="lazy" this way; fine at this size.)
+        loadImage(img, photo.url);
 
         const caption = document.createElement("figcaption");
         caption.textContent = photo.filename;
@@ -236,7 +314,7 @@
         return;
       }
       const user = await response.json();
-      showStatus(`Registered ${user.email}. Now log in.`, "ok");
+      showStatus(`Registered ${user.email}. Log in; an exec will approve your account.`, "ok");
       event.target.reset();
     });
 
@@ -255,6 +333,7 @@
       setToken(access_token);
       showStatus("Logged in.", "ok");
       event.target.reset();
+      await refreshSession();
     });
 
     // Logging out is purely client-side: forget the token. The server
@@ -310,7 +389,7 @@
         // why main.py lists it in allow_headers.
         const response = await fetch(`${API_BASE}/photos`, {
           method: "POST",
-          headers: { Authorization: `Bearer ${getToken()}` },
+          headers: authHeaders(),
           body: formData,
         });
 
@@ -347,10 +426,8 @@
       }
     });
 
-    // Kick things off: show the right auth box for any saved token, then
-    // draw the gallery (still public) as soon as the page loads.
-    setToken(getToken());
-    loadGallery();
+    // Kick things off: check any saved token, then show the right view.
+    refreshSession();
   </script>
 </body>
 </html>

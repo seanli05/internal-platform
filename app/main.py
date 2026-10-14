@@ -4,6 +4,7 @@ YOUR TURN. Two endpoints. Run it with:
     uvicorn app.main:app --reload
 then open http://127.0.0.1:8000/docs
 """
+
 import io
 from PIL import Image, UnidentifiedImageError
 
@@ -18,8 +19,10 @@ from sqlalchemy.orm import Session
 from app import models
 from app.auth import router as auth_router
 from app.db import get_db
+from app.models import Role, has_role
+from app.permissions import require_role
 from app.schemas import PhotoOut
-from app.tokens import get_current_user
+from app.users import router as users_router
 
 UPLOAD_DIR = Path("uploads")
 MAX_BYTES = 10 * 1000 * 1000
@@ -61,15 +64,20 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+app.include_router(users_router)
+
+# Every photo route needs an approved member (or higher). Defined once so the
+# routes below read as "member", not a repeated factory call.
+approved_member = require_role(Role.MEMBER)
 
 
 @app.post("/photos", response_model=PhotoOut)
 def upload_photo(
     file: UploadFile,
     db: Session = Depends(get_db),
-    # FastAPI runs this before the body below. No valid token → 401 and
-    # none of the validation or disk writes happen.
-    current_user: models.User = Depends(get_current_user),
+    # FastAPI runs this before the body below. No valid token → 401,
+    # pending account → 403, and none of the validation or disk writes happen.
+    current_user: models.User = Depends(approved_member),
 ):
     # gates
     if not file.filename:
@@ -77,7 +85,7 @@ def upload_photo(
 
     if not (file.content_type or "").startswith("image/"):
         raise HTTPException(status_code=415, detail="File must be an image")
-    
+
     if (file.size or 0) > MAX_BYTES:
         raise HTTPException(status_code=413, detail="Image too large (max 10 MB)")
 
@@ -89,7 +97,7 @@ def upload_photo(
         Image.open(io.BytesIO(contents)).verify()
     except Exception:
         raise HTTPException(status_code=400, detail="File is not a valid image")
-    
+
     # Take ONLY the extension off the filename and
     # generate the rest ourselves, so the client cannot influence where
     # the bytes land or clobber an existing file.
@@ -104,7 +112,9 @@ def upload_photo(
     # Then the row. If the insert fails, delete the file we just wrote —
     # a compensating action, since the filesystem cannot join the DB's
     # transaction and be rolled back with it.
-    photo = models.Photo(filename=file.filename, path=str(dest), user_id=current_user.id)
+    photo = models.Photo(
+        filename=file.filename, path=str(dest), user_id=current_user.id
+    )
     try:
         db.add(photo)
         db.commit()
@@ -117,9 +127,10 @@ def upload_photo(
     return photo
 
 
-
 @app.get("/photos", response_model=list[PhotoOut])
-def list_photos(db: Session = Depends(get_db)):
+def list_photos(
+    db: Session = Depends(get_db), _: models.User = Depends(approved_member)
+):
     # Plain `def`, not `async def`: there is no `await` here, and a sync
     # endpoint runs in a worker thread — so the sync SQLAlchemy query cannot
     # block the event loop.
@@ -143,10 +154,14 @@ IMAGE_MEDIA_TYPES = {
 
 
 @app.get("/photos/{photo_id}/file")
-def get_photo_file(photo_id: int, db: Session = Depends(get_db)):
+def get_photo_file(
+    photo_id: int,
+    db: Session = Depends(get_db),
+    _: models.User = Depends(approved_member),
+):
     # An endpoint rather than mounting uploads/ as static files: only photos
-    # with a DB row are reachable (orphans and deleted photos 404), and when
-    # auth arrives the ownership check has one obvious place to live.
+    # with a DB row are reachable (orphans and deleted photos 404), and only
+    # approved members can fetch them. A static mount couldn't check either.
     photo = db.get(models.Photo, photo_id)
     if photo is None:
         raise HTTPException(status_code=404, detail="Photo not found")
@@ -158,11 +173,17 @@ def get_photo_file(photo_id: int, db: Session = Depends(get_db)):
     media_type = IMAGE_MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream")
     # nosniff: tells the browser to trust our Content-Type rather than
     # inspecting the bytes and deciding for itself.
-    return FileResponse(path, media_type=media_type, headers={"X-Content-Type-Options": "nosniff"})
+    return FileResponse(
+        path, media_type=media_type, headers={"X-Content-Type-Options": "nosniff"}
+    )
 
 
 @app.delete("/photos/{photo_id}", status_code=204)
-def delete_photo(photo_id: int, db: Session = Depends(get_db)):
+def delete_photo(
+    photo_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(approved_member),
+):
     # `photo_id: int` in the signature + `{photo_id}` in the path is all
     # FastAPI needs: it pulls the segment out of the URL, converts it to int,
     # and answers 422 on its own for something like /photos/abc.
@@ -171,6 +192,15 @@ def delete_photo(photo_id: int, db: Session = Depends(get_db)):
     photo = db.get(models.Photo, photo_id)
     if photo is None:
         raise HTTPException(status_code=404, detail="Photo not found")
+
+    # Ownership: a route-level dependency can only check the user's role,
+    # because it runs before we know which photo this is. "Is it theirs?"
+    # needs the row, so that check lives here. Owners may delete their own;
+    # execs and admins may delete any (moderation).
+    if photo.user_id != user.id and not has_role(user, Role.EXEC):
+        raise HTTPException(
+            status_code=403, detail="You can only delete your own photos"
+        )
 
     # Row FIRST, file second — the mirror image of upload. If the commit
     # fails we raise before touching the disk, so nothing changes. If the

@@ -12,7 +12,7 @@ import jwt
 from app import models
 from app.config import SECRET_KEY
 from app.tokens import ALGORITHM, create_access_token
-from conftest import EMAIL, PASSWORD, auth_header, login, register
+from conftest import EMAIL, PASSWORD, auth_header, login, make_user, register
 
 
 def upload(client, png_bytes, headers=None):
@@ -27,6 +27,9 @@ def test_register_stores_a_hash_not_the_password(client, db):
     assert r.status_code == 201
     assert r.json()["email"] == EMAIL
     assert "password_hash" not in r.json()
+    # New accounts start as pending members.
+    assert r.json()["role"] == "member"
+    assert r.json()["status"] == "pending"
 
     user = db.query(models.User).one()
     assert user.password_hash != PASSWORD
@@ -113,19 +116,22 @@ def test_upload_with_valid_token_records_the_owner(client, db, png_bytes, token)
 
 def test_token_for_a_specific_user_is_attributed_to_them(client, db, png_bytes):
     # Two users; a token minted for the second must upload as the second.
-    register(client, email="first@example.com")
-    register(client, email="second@example.com")
-    second = db.query(models.User).filter_by(email="second@example.com").one()
+    make_user(db, "first@example.com")
+    second, _ = make_user(db, "second@example.com")
 
     r = upload(client, png_bytes, auth_header(create_access_token(second.id)))
     assert db.get(models.Photo, r.json()["id"]).user_id == second.id
 
 
-# --- GET /photos stays public ----------------------------------------------
+# --- GET /photos ------------------------------------------------------------
 
 
-def test_list_photos_needs_no_token(client, png_bytes, token):
+def test_list_photos_requires_a_token(client):
+    assert client.get("/photos").status_code == 401
+
+
+def test_list_photos_with_token(client, png_bytes, token):
     upload(client, png_bytes, auth_header(token))
-    r = client.get("/photos")
+    r = client.get("/photos", headers=auth_header(token))
     assert r.status_code == 200
     assert len(r.json()) == 1
