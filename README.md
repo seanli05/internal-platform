@@ -9,6 +9,7 @@ uv venv
 source .venv/bin/activate
 uv pip install -r requirements.txt
 cp .env.example .env   # then fill in SECRET_KEY (command is in the file)
+alembic upgrade head   # create/update the database schema
 uvicorn app.main:app --reload
 ```
 
@@ -26,8 +27,10 @@ app/
   auth.py     /auth/register, /auth/login           (throwaway: password proof)
   passwords.py bcrypt hash/verify                   (throwaway: password proof)
   tokens.py   mint JWT + get_current_user           (permanent: token spine)
+migrations/   Alembic schema migrations — see docs/migrations.md
+tests/        pytest suite (uv pip install -r requirements-dev.txt; uv run pytest)
 uploads/      photo bytes on disk (gitignored)
-dss.db        SQLite file (gitignored)
+photos.db     SQLite file (gitignored)
 ```
 
 Bytes live on disk; rows in the database point at them.
