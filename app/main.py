@@ -4,6 +4,7 @@ YOUR TURN. Two endpoints. Run it with:
     uvicorn app.main:app --reload
 then open http://127.0.0.1:8000/docs
 """
+
 import io
 from PIL import Image, UnidentifiedImageError
 
@@ -84,7 +85,7 @@ def upload_photo(
 
     if not (file.content_type or "").startswith("image/"):
         raise HTTPException(status_code=415, detail="File must be an image")
-    
+
     if (file.size or 0) > MAX_BYTES:
         raise HTTPException(status_code=413, detail="Image too large (max 10 MB)")
 
@@ -96,7 +97,7 @@ def upload_photo(
         Image.open(io.BytesIO(contents)).verify()
     except Exception:
         raise HTTPException(status_code=400, detail="File is not a valid image")
-    
+
     # Take ONLY the extension off the filename and
     # generate the rest ourselves, so the client cannot influence where
     # the bytes land or clobber an existing file.
@@ -111,7 +112,9 @@ def upload_photo(
     # Then the row. If the insert fails, delete the file we just wrote —
     # a compensating action, since the filesystem cannot join the DB's
     # transaction and be rolled back with it.
-    photo = models.Photo(filename=file.filename, path=str(dest), user_id=current_user.id)
+    photo = models.Photo(
+        filename=file.filename, path=str(dest), user_id=current_user.id
+    )
     try:
         db.add(photo)
         db.commit()
@@ -124,9 +127,10 @@ def upload_photo(
     return photo
 
 
-
 @app.get("/photos", response_model=list[PhotoOut])
-def list_photos(db: Session = Depends(get_db), _: models.User = Depends(approved_member)):
+def list_photos(
+    db: Session = Depends(get_db), _: models.User = Depends(approved_member)
+):
     # Plain `def`, not `async def`: there is no `await` here, and a sync
     # endpoint runs in a worker thread — so the sync SQLAlchemy query cannot
     # block the event loop.
@@ -150,7 +154,11 @@ IMAGE_MEDIA_TYPES = {
 
 
 @app.get("/photos/{photo_id}/file")
-def get_photo_file(photo_id: int, db: Session = Depends(get_db), _: models.User = Depends(approved_member)):
+def get_photo_file(
+    photo_id: int,
+    db: Session = Depends(get_db),
+    _: models.User = Depends(approved_member),
+):
     # An endpoint rather than mounting uploads/ as static files: only photos
     # with a DB row are reachable (orphans and deleted photos 404), and only
     # approved members can fetch them. A static mount couldn't check either.
@@ -165,7 +173,9 @@ def get_photo_file(photo_id: int, db: Session = Depends(get_db), _: models.User 
     media_type = IMAGE_MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream")
     # nosniff: tells the browser to trust our Content-Type rather than
     # inspecting the bytes and deciding for itself.
-    return FileResponse(path, media_type=media_type, headers={"X-Content-Type-Options": "nosniff"})
+    return FileResponse(
+        path, media_type=media_type, headers={"X-Content-Type-Options": "nosniff"}
+    )
 
 
 @app.delete("/photos/{photo_id}", status_code=204)
@@ -188,7 +198,9 @@ def delete_photo(
     # needs the row, so that check lives here. Owners may delete their own;
     # execs and admins may delete any (moderation).
     if photo.user_id != user.id and not has_role(user, Role.EXEC):
-        raise HTTPException(status_code=403, detail="You can only delete your own photos")
+        raise HTTPException(
+            status_code=403, detail="You can only delete your own photos"
+        )
 
     # Row FIRST, file second — the mirror image of upload. If the commit
     # fails we raise before touching the disk, so nothing changes. If the

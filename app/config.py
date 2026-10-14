@@ -17,4 +17,6 @@ load_dotenv()
 # deployment mistake, and a server that starts without one is a trap.
 SECRET_KEY = os.environ.get("SECRET_KEY", "")
 if not SECRET_KEY:
-    raise RuntimeError("SECRET_KEY is not set. Copy .env.example to .env and fill it in.")
+    raise RuntimeError(
+        "SECRET_KEY is not set. Copy .env.example to .env and fill it in."
+    )

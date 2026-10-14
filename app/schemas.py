@@ -20,7 +20,7 @@ class PhotoOut(BaseModel):
     # requiring a dict. Without it, returning a Photo instance fails.
     model_config = ConfigDict(from_attributes=True)
 
-    id:int
+    id: int
     filename: str
     uploaded_at: datetime
 

@@ -28,16 +28,24 @@ def normalize_email(email: str) -> str:
 
 
 @router.post("/register", response_model=UserOut, status_code=201)
-def register(email: str = Form(), password: str = Form(), db: Session = Depends(get_db)):
+def register(
+    email: str = Form(), password: str = Form(), db: Session = Depends(get_db)
+):
     # Form() reads application/x-www-form-urlencoded or multipart fields —
     # what an HTML <form> sends — instead of a JSON body.
     email = normalize_email(email)
     if "@" not in email:
         raise HTTPException(status_code=400, detail="Enter a valid email address")
     if len(password) < MIN_PASSWORD_LENGTH:
-        raise HTTPException(status_code=400, detail=f"Password must be at least {MIN_PASSWORD_LENGTH} characters")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Password must be at least {MIN_PASSWORD_LENGTH} characters",
+        )
     if len(password.encode()) > MAX_PASSWORD_BYTES:
-        raise HTTPException(status_code=400, detail=f"Password must be at most {MAX_PASSWORD_BYTES} bytes")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Password must be at most {MAX_PASSWORD_BYTES} bytes",
+        )
 
     # Saying "already registered" does reveal that the email has an account.
     # Unavoidable for a signup form without email verification (out of scope),

@@ -22,24 +22,16 @@ def require_role(minimum: Role) -> Callable[..., models.User]:
     Usage in a route:
         user: models.User = Depends(require_role(Role.EXEC))
 
-    YOURS TO WRITE. require_role is a *factory*: it runs once, when the route
-    is defined, and returns the function FastAPI will call on every request.
-      1. Define an inner function that depends on get_current_user
-         (so authentication still happens first: no/bad token → 401).
-      2. Not approved yet → 403 "Account awaiting approval".
-      3. Rank below `minimum` → 403 "Insufficient permissions"
-         (models.has_role does the rank comparison).
-      4. Return the user.
-      5. require_role returns the inner function, not the result of calling it.
+    Inner function is returned as a dependency for almost all endpoints.
     """
-    def require_role_callable(user: models.User=Depends(get_current_user)):
-      if user.status != Status.APPROVED:
-         raise HTTPException(403, "Account awaiting approval")
 
-      if has_role(user, minimum):
-         return user
+    def require_role_callable(user: models.User = Depends(get_current_user)):
+        if user.status != Status.APPROVED:
+            raise HTTPException(403, "Account awaiting approval")
 
-      raise HTTPException(403, "Insufficient permissions")
-      
+        if has_role(user, minimum):
+            return user
+
+        raise HTTPException(403, "Insufficient permissions")
 
     return require_role_callable
